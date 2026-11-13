@@ -1,0 +1,9 @@
+data/
+*.psv
+*.parquet
+*.zip
+figures/
+__pycache__/
+.ipynb_checkpoints/
+.DS_Store
+.venv/
