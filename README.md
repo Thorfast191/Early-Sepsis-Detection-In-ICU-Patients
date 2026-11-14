@@ -1,13 +1,17 @@
 # Early Sepsis Prediction in ICU Patients
 
-University ML course project: early prediction of sepsis from hourly ICU data, using the
-[PhysioNet/CinC Challenge 2019](https://physionet.org/content/challenge-2019/1.0.0/) dataset
-(40,336 patients from two hospitals, about 1.5M hourly rows).
+CSE445 ML course project: early prediction of sepsis from hourly ICU data, using the
+[PhysioNet/CinC Challenge 2019](https://physionet.org/content/challenge-2019/1.0.0/) dataset contains 40,336 patients data from two hospitals, about 1.5M hourly rows.
 
 This repo currently contains **Part 1: data preprocessing**, split into 13 steps
 (`data_preprocessing/s01_*.py` to `s13_*.py`) and run from one notebook.
 
-## Run it in Colab
+## For Group Mates
+
+1. Clone the repo
+   2\. Navigate to the `/data_preprocessing` directory and review all files and their comments. Each student who contributed to a file must add their full name and student ID in the comments.
+
+## How to run it in colab??
 
 1. Open `notebooks/01_data_preprocessing.ipynb` in Google Colab.
 2. Run the setup cells. They mount Google Drive, clone (or `git pull`) this repo into
