@@ -18,6 +18,13 @@ def scale(df, columns):
     return scaled
 
 
+def before():
+    df = utils.load(config.CLEAN_PARQUET)
+    patient_id = utils.demo_patient()
+    utils.heading(f"Before: demo patient {patient_id}, original values")
+    utils.show(utils.demo_rows(df, patient_id, columns=utils.numeric_feature_cols(df)))
+
+
 def run(force=False):
     before = utils.load(config.CLEAN_PARQUET)
     columns = utils.numeric_feature_cols(before)
@@ -35,6 +42,17 @@ def run(force=False):
     utils.show(before[columns].describe().T[["mean", "std", "min", "max"]].round(2))
     print("\nafter scaling (mean ~0, std ~1):")
     utils.show(after[columns].describe().T[["mean", "std", "min", "max"]].round(2))
+
+    patient_id = utils.demo_patient()
+    old = utils.demo_rows(before, patient_id, columns=columns)
+    # ICULOS is scaled too, but scaling keeps its order, so the first hours
+    # are still the same rows; the index from s04 confirms it
+    new = utils.demo_rows(after, patient_id, n=len(old), columns=columns)
+    assert list(old.index) == list(new.index), "demo rows do not line up"
+    new = new.round(3)
+    new.insert(0, "hour", old["ICULOS"].values)
+    utils.heading(f"After: demo patient {patient_id}, same rows scaled (hour = original ICULOS)")
+    utils.show(new)
 
     if "HR" not in columns:
         return after

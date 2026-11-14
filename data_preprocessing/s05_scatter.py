@@ -6,6 +6,13 @@ from data_preprocessing import config, utils
 PAIRS = [("HR", "Resp"), ("MAP", "HR")]
 
 
+def before():
+    df = utils.load(config.CLEAN_PARQUET)
+    columns = utils.existing(["HR", "Resp", "MAP", "SepsisLabel"], df)
+    utils.heading("Before: balanced sample used for the scatter plots")
+    utils.preview_sample(df, columns, config.PLOT_SAMPLE_PER_CLASS)
+
+
 def run(force=False):
     df = utils.load(config.CLEAN_PARQUET)
     sample = utils.balanced_sample(df, config.PLOT_SAMPLE_PER_CLASS)

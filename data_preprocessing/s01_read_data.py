@@ -120,8 +120,64 @@ def get_data(force=False):
     return df
 
 
+def find_demo_in_zip(zf, members):
+    """Read patient files in sorted order until the demo patient is found."""
+    for name, hospital in members:
+        with zf.open(name) as f:
+            patient = pd.read_csv(f, sep="|")
+        patient["patient_id"] = os.path.basename(name).replace(".psv", "")
+        if utils.pick_demo_patient(patient) is not None:
+            return name
+    return None
+
+
+def before():
+    if not (os.path.exists(config.RAW_ZIP) and zipfile.is_zipfile(config.RAW_ZIP)):
+        if utils.is_done(config.RAW_PARQUET):
+            print("the raw zip is not in raw/, but sepsis_raw.parquet exists; skipping the raw text preview")
+            utils.demo_patient()
+        else:
+            print("the dataset is not downloaded yet, run() will download it")
+        return
+
+    with zipfile.ZipFile(config.RAW_ZIP) as zf:
+        members = []
+        for name in zf.namelist():
+            hospital = find_hospital(name)
+            if name.endswith(".psv") and hospital is not None:
+                members.append((name, hospital))
+        members.sort()
+
+        for folder, hospital in SET_FOLDERS.items():
+            names = [name for name, h in members if h == hospital]
+            utils.heading(f"{folder}: {len(names)} files, first 5:")
+            for name in names[:5]:
+                print(" ", name)
+
+        demo_id = utils.DEMO_PATIENT
+        if demo_id is None:
+            demo_file = find_demo_in_zip(zf, members)
+        else:
+            demo_file = None
+            for name, hospital in members:
+                if os.path.basename(name) == demo_id + ".psv":
+                    demo_file = name
+        if demo_file is None:
+            return
+
+        utils.heading(f"Before: first 6 raw lines of {demo_file} (pipe separated, one row per ICU hour)")
+        with zf.open(demo_file) as f:
+            lines = f.read().decode("utf-8").splitlines()
+        for line in lines[:6]:
+            print(line)
+
+
 def run(force=False):
     df = get_data(force)
+
+    patient_id = utils.pick_demo_patient(df)
+    utils.heading(f"After: the same patient ({patient_id}) as rows of the table")
+    utils.show(utils.demo_rows(df, patient_id, n=5))
 
     print("\nshape:", df.shape)
     utils.show(df.head())

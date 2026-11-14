@@ -9,6 +9,15 @@ COLUMNS = ["HR", "Temp", "Resp", "MAP"]
 PALETTE = {0: "tab:blue", 1: "tab:red"}
 
 
+def before():
+    df = utils.load(config.CLEAN_PARQUET)
+    columns = utils.existing(COLUMNS + ["SepsisLabel"], df)
+    utils.heading("Before: small balanced sample used for the swarm plots")
+    utils.preview_sample(df, columns, config.SWARM_SAMPLE_PER_CLASS)
+    utils.heading("Before: balanced sample used for the strip plots")
+    utils.preview_sample(df, columns, config.PLOT_SAMPLE_PER_CLASS)
+
+
 def run(force=False):
     df = utils.load(config.CLEAN_PARQUET)
     columns = utils.existing(COLUMNS, df)

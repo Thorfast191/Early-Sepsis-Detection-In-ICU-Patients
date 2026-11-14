@@ -31,6 +31,12 @@ def iqr_table(df, columns):
     return table.sort_values("outlier %", ascending=False)
 
 
+def before():
+    df = utils.load(config.CLEAN_PARQUET)
+    utils.heading("Before: the IQR table uses all rows (no sample)")
+    utils.preview_sample(df, utils.numeric_feature_cols(df))
+
+
 def run(force=False):
     df = utils.load(config.CLEAN_PARQUET)
     columns = utils.numeric_feature_cols(df)

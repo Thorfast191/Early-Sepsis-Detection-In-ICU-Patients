@@ -20,6 +20,18 @@ def drop_nulls(df):
     return df
 
 
+def before():
+    df = utils.load(config.NODUP_PARQUET)
+    patient_id = utils.demo_patient()
+    utils.heading(f"Before: demo patient {patient_id}, first 8 hours, all columns")
+    utils.show(utils.demo_rows(df, patient_id, n=8))
+
+    vitals = utils.existing(config.VITALS, df)
+    all_missing = df[df[vitals].isna().all(axis=1)]
+    utils.heading("examples of rows where all vitals are missing:")
+    utils.show(all_missing[["patient_id", "ICULOS"] + vitals].head(3))
+
+
 def run(force=False):
     before = utils.load(config.NODUP_PARQUET)
 
@@ -62,6 +74,15 @@ def run(force=False):
     table = pd.DataFrame({"missing %": missing_pct.round(1)})
     table["dropped"] = [c in dropped_cols for c in table.index]
     utils.show(table)
+
+    # same hours as in before(); hours with all vitals missing are gone now
+    patient_id = utils.demo_patient()
+    hours = list(utils.demo_rows(before, patient_id, n=8)["ICULOS"])
+    after_rows = utils.demo_rows(after, patient_id, hours=hours)
+    utils.heading(f"After: demo patient {patient_id}, same hours, remaining columns")
+    utils.show(after_rows)
+    removed_hours = [h for h in hours if h not in list(after_rows["ICULOS"])]
+    print("hours removed for this patient (all vitals missing):", removed_hours)
     return after
 
 

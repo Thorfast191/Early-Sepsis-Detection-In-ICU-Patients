@@ -22,6 +22,28 @@ def encode(df, age_group, hospital_encoder):
     return df
 
 
+BEFORE_COLS = ["hospital", "ICU_type", "Age", "Gender"]
+
+
+def before():
+    df = utils.load(config.CLEAN_PARQUET)
+    patient_id = utils.demo_patient()
+    utils.heading(f"Before: demo patient {patient_id}")
+    utils.show(utils.demo_rows(df, patient_id, n=5, columns=BEFORE_COLS))
+
+
+def show_after(clean, final):
+    patient_id = utils.demo_patient()
+    old = utils.demo_rows(clean, patient_id, n=5, columns=BEFORE_COLS)
+    encoded_cols = ["hospital"] + [c for c in final.columns if c.startswith("ICU_") or c.startswith("Age_")]
+    # ICULOS is scaled in the final file, but its order is kept
+    new = utils.demo_rows(final, patient_id, n=5, columns=encoded_cols)
+    assert list(old.index) == list(new.index), "demo rows do not line up"
+    new.insert(0, "hour", old["ICULOS"].values)
+    utils.heading(f"After: demo patient {patient_id}, same rows encoded (hour = original ICULOS)")
+    utils.show(new.drop(columns=["ICULOS"]))
+
+
 def run(force=False):
     clean = utils.load(config.CLEAN_PARQUET)
 
@@ -62,6 +84,8 @@ def run(force=False):
 
     print("final shape (scaled + encoded):  ", final.shape)
     print("final shape (unscaled + encoded):", final_unscaled.shape)
+
+    show_after(clean, final)
     return final
 
 

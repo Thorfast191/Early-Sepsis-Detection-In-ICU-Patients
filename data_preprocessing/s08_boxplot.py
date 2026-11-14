@@ -5,6 +5,12 @@ import matplotlib.pyplot as plt
 from data_preprocessing import config, utils
 
 
+def before():
+    df = utils.load(config.CLEAN_PARQUET)
+    utils.heading("Before: the boxplots use all rows (no sample)")
+    utils.preview_sample(df, utils.numeric_feature_cols(df))
+
+
 def run(force=False):
     df = utils.load(config.CLEAN_PARQUET)
     columns = utils.numeric_feature_cols(df)

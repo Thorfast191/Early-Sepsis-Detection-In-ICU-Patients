@@ -3,6 +3,18 @@ import os
 from data_preprocessing import config, utils
 
 
+def before():
+    df = utils.load(config.RAW_PARQUET)
+    utils.heading(f"Before: input shape {df.shape}, first 5 rows")
+    utils.show(df.head(5))
+
+    duplicated = df.duplicated(keep=False)
+    print("duplicated rows:", df.duplicated().sum())
+    if duplicated.any():
+        utils.heading("examples of duplicated rows:")
+        utils.show(df[duplicated].head(5))
+
+
 def run(force=False):
     df = utils.load(config.RAW_PARQUET)
 
@@ -24,6 +36,9 @@ def run(force=False):
         print("no duplicated rows, nothing was removed")
     else:
         print(f"removed {removed} duplicated rows")
+
+    utils.heading("After: first 5 rows")
+    utils.show(nodup.head(5))
     return nodup
 
 

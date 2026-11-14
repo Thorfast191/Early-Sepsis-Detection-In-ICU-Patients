@@ -40,6 +40,39 @@ def impute(df):
     return df
 
 
+BEFORE_COLS = config.VITALS + ["Glucose", "Unit1", "Unit2"]
+AFTER_COLS = config.VITALS + ["Glucose", "ICU_type"]
+YELLOW = "#fff3b0"
+GREEN = "#c8f7c5"
+
+
+def before_rows(df):
+    patient_id = utils.demo_patient()
+    return utils.demo_rows(df, patient_id, n=12, columns=utils.existing(BEFORE_COLS, df))
+
+
+def before():
+    df = utils.load(config.DROPPED_PARQUET)
+    rows = before_rows(df)
+    utils.heading(f"Before: demo patient {utils.demo_patient()}, first 12 hours (missing cells in yellow)")
+    utils.show_highlighted(rows, rows.isna(), YELLOW)
+
+
+def show_after(before_df, after_df):
+    old = before_rows(before_df)
+    new = utils.demo_rows(after_df, utils.demo_patient(), hours=list(old["ICULOS"]),
+                          columns=utils.existing(AFTER_COLS, after_df))
+    assert list(old["ICULOS"]) == list(new["ICULOS"]), "demo hours do not line up"
+
+    # green marks the cells that were missing before and are filled now
+    was_missing = pd.DataFrame(False, index=new.index, columns=new.columns)
+    for col in new.columns:
+        if col in old.columns:
+            was_missing[col] = old[col].isna().values
+    utils.heading("After: same hours (cells that were missing in green)")
+    utils.show_highlighted(new, was_missing, GREEN)
+
+
 def run(force=False):
     before = utils.load(config.DROPPED_PARQUET)
 
@@ -66,6 +99,8 @@ def run(force=False):
 
     assert after.isna().sum().sum() == 0, "there are still nulls after imputation"
     print("no missing values left, shape:", after.shape)
+
+    show_after(before, after)
     return after
 
 
