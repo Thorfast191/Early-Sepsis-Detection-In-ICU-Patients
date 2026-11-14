@@ -1,6 +1,6 @@
 #Hasibun Nur 2211011642
 import matplotlib.pyplot as plt
-import seaborn as sns
+import seaborn as sns 
 
 from data_preprocessing import config, utils
 
