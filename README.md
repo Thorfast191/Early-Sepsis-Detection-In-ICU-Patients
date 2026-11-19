@@ -35,6 +35,23 @@ code falls back to downloading the 40,336 `.psv` files in parallel from the Phys
 listing and writes them straight into one zip in Drive (`raw/`). Later sessions read that zip
 and never download again.
 
+## Part 2 and 3: novel preprocessing and split ablation
+
+`novel_preprocessing/` builds a leakage-free BASE feature set and novel features (observation process,
+patient baseline, clinical scores, trajectories, time-decay imputation, hospital-relative encoding).
+`ablation/` compares BASE and NOVEL under train/val/test, train/test, 5-fold CV and cross-hospital
+splits, with XGBoost and logistic regression, for horizons of 6, 12, 24 and 48 hours.
+
+1. Run notebook 01 at least up to step 2 (`sepsis_nodup.parquet`).
+2. Run `notebooks/02_novel_preprocessing.ipynb` (features, a few minutes, CPU is enough).
+3. Run `notebooks/03_split_ablation.ipynb` on a GPU runtime. Every trained model writes its own
+   result file, so after a disconnect just run the cells again.
+
+Results go to `results/` in Drive (`ablation_results.csv` in long format, statistics, summary table).
+Set `QUICK_MODE = True` in the notebooks (or `SEPSIS_QUICK_MODE=1` locally) to run everything on a
+sample of 4,000 patients with separate checkpoint folders. The checks in `tests/` (causality, leakage,
+identical evaluation sets) run with `python -m tests.test_causality` and so on.
+
 ## Run it locally
 
 ```
