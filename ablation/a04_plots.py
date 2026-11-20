@@ -46,7 +46,7 @@ def bars_by_strategy(means, horizon):
 
 def gap_bars():
     gaps = pd.read_csv(config.STATS_GAP_CSV)
-    gaps = gaps[gaps["model"] == MAIN_MODEL]
+    gaps = gaps[(gaps["model"] == MAIN_MODEL) & (gaps["internal"] == "mean(S1,S3)")]
     arms = [a for a in COLORS if a in set(gaps["arm"])]
     x = np.arange(len(config.HORIZONS))
     width = 0.8 / len(arms)
@@ -134,6 +134,56 @@ def importances(top=20):
     return mean
 
 
+def v2_arm_bars(means):
+    """External (S4) and internal (S1) AUROC of every arm, including the v2 arms."""
+    sub = means[(means["model"] == MAIN_MODEL)]
+    v2 = [a for a in sub["arm"].unique() if a not in COLORS]
+    if not v2:
+        return
+    fig, axes = plt.subplots(1, len(config.HORIZONS), figsize=(22, 8), sharey=True)
+    for ax, horizon in zip(axes, config.HORIZONS):
+        ext = sub[(sub["strategy"] == "S4") & (sub["horizon"] == horizon)].set_index("arm")
+        order = ext["auroc"].sort_values().index
+        ext = ext.loc[order]
+        err = np.vstack([ext["auroc"] - ext["auroc_lo"], ext["auroc_hi"] - ext["auroc"]])
+        colors = [COLORS.get(a, "tab:green" if a.startswith("NOVEL_fix") else "tab:gray") for a in order]
+        ax.barh(order, ext["auroc"], xerr=err, color=colors, capsize=2)
+        base = ext.loc["BASE", "auroc"] if "BASE" in ext.index else None
+        if base is not None:
+            ax.axvline(base, color="tab:blue", linestyle="--", linewidth=1)
+        ax.set_xlim(0.4, max(0.8, float(ext["auroc_hi"].max()) + 0.02))
+        ax.set_title(f"S4 (A->B and B->A), {horizon} h")
+        ax.set_xlabel("AUROC (95% bootstrap CI)")
+        ax.set_ylabel("Arm")
+    utils.finish_plot("External AUROC of every arm (XGBoost); dashed line = BASE", None, None,
+                      fig_name("a04_v2_arms_external.png"))
+
+
+def screening_plot():
+    if not utils.is_done(config.SCREEN_CSV):
+        return
+    table = pd.read_csv(config.SCREEN_CSV)
+    table = table[(table["rule"] == "domain_auroc") & (table["arm"] == "NOVEL_fix_screen")]
+    if table.empty:
+        return
+    keys = table[["strategy", "fold"]].drop_duplicates().itertuples(index=False)
+    keys = list(keys)
+    fig, axes = plt.subplots(1, len(keys), figsize=(7 * len(keys), 12))
+    axes = np.atleast_1d(axes)
+    for ax, (strategy, fold) in zip(axes, keys):
+        t = table[(table["strategy"] == strategy) & (table["fold"] == fold)].sort_values("score")
+        colors = ["tab:red" if d else "tab:green" for d in t["dropped"]]
+        ax.barh(t["unit"], t["score"], color=colors)
+        ax.axvline(config.SCREEN_MAX_DOMAIN_AUROC, color="black", linestyle="--")
+        ax.set_xlim(0.4, 1.0)
+        ax.tick_params(axis="y", labelsize=6)
+        ax.set_title(f"{strategy} fold {fold}: red = dropped")
+        ax.set_xlabel("Hospital-classifier AUROC (no sepsis labels)")
+        ax.set_ylabel("Feature unit")
+    utils.finish_plot("Site-invariance screening: how well each feature unit identifies the hospital",
+                      None, None, fig_name("a04_v2_screening.png"))
+
+
 def run(force=False):
     means = load_means()
     for horizon in config.HORIZONS:
@@ -142,6 +192,8 @@ def run(force=False):
     for horizon in config.HORIZONS:
         curves(horizon)
     auroc_vs_horizon(means)
+    v2_arm_bars(means)
+    screening_plot()
     top = importances()
     if top is not None:
         utils.show(top.head(20).to_frame("mean gain share").round(4))

@@ -16,11 +16,12 @@ def first_observed(values, group):
     return values.where(first).groupby(group, sort=False).ffill()
 
 
-def features(grid):
+def features(grid, labs=None):
     """P3 deviation from the patient's own baseline."""
+    labs = config.LABS if labs is None else labs
     group = grid["patient_id"].to_numpy()
     pos = common.positions(grid)
-    last = grid[config.MEASURED].groupby(group, sort=False).ffill()
+    last = grid[BASELINE_VITALS + labs].groupby(group, sort=False).ffill()
     parts = {}
 
     # vitals: expanding median over the first 6 hours, then frozen
@@ -38,8 +39,8 @@ def features(grid):
     for v in BASELINE_VITALS:
         parts[f"{v}_dev"] = (last[v] - baseline[v]).to_numpy(dtype="float32")
 
-    labs_first = first_observed(grid[config.LABS], group)
-    for v in config.LABS:
+    labs_first = first_observed(grid[labs], group)
+    for v in labs:
         parts[f"{v}_dev"] = (last[v] - labs_first[v]).to_numpy(dtype="float32")
     return pd.DataFrame(parts, index=grid.index)
 

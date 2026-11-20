@@ -184,7 +184,7 @@ def up_to_date():
 def show_outputs(summary, paired, gaps):
     print("summary (mean over splits [95% bootstrap CI], patients resampled):")
     utils.show(summary)
-    print("\nNOVEL - BASE, paired on the same test patients:")
+    print("\npaired differences on the same test patients and resamples:")
     utils.show(paired.round(4))
     print("\ngeneralisation gap (mean S1/S3 AUROC - S4 AUROC):")
     utils.show(gaps.round(4))
@@ -225,59 +225,93 @@ def run(force=False):
     means["level"] = "mean over splits"
     pd.concat([means, per_set], ignore_index=True).to_csv(config.STATS_CI_CSV, index=False)
 
-    # paired differences against BASE (and transductive vs inductive P2 on S4)
-    paired = []
-    for (label, arm, horizon, model), reps in mean_reps.items():
-        pairs = [("BASE", arm)] if arm != "BASE" else []
-        if arm == a02_train_eval.ALT_P2_ARM:
-            pairs.append((arm, "NOVEL"))
-        for ref_arm, new_arm in pairs:
-            ref_reps = mean_reps.get((label, ref_arm, horizon, model))
-            if ref_reps is None:
-                continue
-            row = {"strategy": label, "comparison": f"{new_arm} - {ref_arm}", "horizon": horizon, "model": model}
-            ref_pt = means[(means["strategy"] == label) & (means["arm"] == ref_arm)
-                           & (means["horizon"] == horizon) & (means["model"] == model)].iloc[0]
-            new_pt = means[(means["strategy"] == label) & (means["arm"] == new_arm)
-                           & (means["horizon"] == horizon) & (means["model"] == model)].iloc[0]
-            for k in ["auroc", "auprc"]:
-                d = mean_reps[(label, new_arm, horizon, model)][k] - ref_reps[k]
-                lo, hi = ci(d)
-                row.update({f"{k}_diff": new_pt[k] - ref_pt[k], f"{k}_diff_lo": lo, f"{k}_diff_hi": hi,
-                            f"{k}_boot_p": boot_p(d)})
-            if ref_arm == "BASE" and len(delongs):
-                d = delongs[(delongs["arm"] == new_arm) & (delongs["horizon"] == horizon)
-                            & (delongs["model"] == model)]
-                d = d[[strategy_label(s, f) == label or (label == "S4" and s == "S4")
-                       for s, f in zip(d["strategy"], d["fold"])]]
-                row["delong_p_per_split"] = ";".join(f"{p:.3g}" for p in d["delong_p"])
-                row["delong_splits_p_below_0.05"] = int((d["delong_p"] < 0.05).sum())
-                row["n_splits"] = len(d)
-            paired.append(row)
-    paired = pd.DataFrame(paired)
+    paired = paired_table(replicates, points, delongs, mean_reps)
     paired.to_csv(config.STATS_PAIRED_CSV, index=False)
-
-    # generalisation gap: mean of the S1 and S3 AUROC minus the S4 AUROC
-    gaps = []
-    for (arm, horizon, model), _ in means.groupby(["arm", "horizon", "model"]):
-        need = [(s, arm, horizon, model) for s in ["S1", "S3", "S4"]]
-        if not all(k in mean_reps for k in need):
-            continue
-        internal = (mean_reps[need[0]]["auroc"] + mean_reps[need[1]]["auroc"]) / 2
-        gap_reps = internal - mean_reps[need[2]]["auroc"]
-        pt = {s: means[(means["strategy"] == s) & (means["arm"] == arm) & (means["horizon"] == horizon)
-                       & (means["model"] == model)]["auroc"].iloc[0] for s in ["S1", "S3", "S4"]}
-        internal_pt = (pt["S1"] + pt["S3"]) / 2
-        lo, hi = ci(gap_reps)
-        gaps.append({"arm": arm, "horizon": horizon, "model": model, "internal_auroc": internal_pt,
-                     "external_auroc": pt["S4"], "gap": internal_pt - pt["S4"], "gap_lo": lo, "gap_hi": hi})
-    gaps = pd.DataFrame(gaps)
+    gaps = gap_table(replicates, points, means, mean_reps)
     gaps.to_csv(config.STATS_GAP_CSV, index=False)
 
     summary = summary_table(means)
     summary.to_csv(config.SUMMARY_CSV)
     show_outputs(summary, paired, gaps)
     return summary, paired, gaps
+
+
+def comparisons(arm):
+    """(reference arm, new arm) pairs reported for one arm."""
+    if arm == "BASE":
+        return []
+    pairs = [("BASE_noICULOS" if arm == "NOVEL_noICULOS" else "BASE", arm)]
+    if arm == a02_train_eval.ALT_P2_ARM:
+        pairs.append((arm, "NOVEL"))
+    elif arm in a02_train_eval.V2_ARMS:
+        pairs.append(("NOVEL", arm))
+    return pairs
+
+
+def test_sets(points, label, arm, horizon, model):
+    rows = points[(points["arm"] == arm) & (points["horizon"] == horizon) & (points["model"] == model)]
+    labels = [strategy_label(st, f) for st, f in zip(rows["strategy"], rows["fold"])]
+    keep = [lab == label or (label == "S4" and st == "S4") for lab, st in zip(labels, rows["strategy"])]
+    return {(r.strategy, r.seed, r.fold): r for r in rows[keep].itertuples()}
+
+
+def paired_table(replicates, points, delongs, mean_reps):
+    """new - reference on the test sets both arms have (same patients, same resamples)."""
+    rows = []
+    for (label, arm, horizon, model) in mean_reps:
+        for ref_arm, new_arm in comparisons(arm):
+            ref_sets = test_sets(points, label, ref_arm, horizon, model)
+            new_sets = test_sets(points, label, new_arm, horizon, model)
+            common = sorted(set(ref_sets) & set(new_sets))
+            if not common:
+                continue
+            row = {"strategy": label, "comparison": f"{new_arm} - {ref_arm}", "horizon": horizon,
+                   "model": model, "n_splits": len(common)}
+            for k in ["auroc", "auprc"]:
+                d = np.mean([replicates[c + (horizon, model, new_arm)][k] - replicates[c + (horizon, model, ref_arm)][k]
+                             for c in common], axis=0)
+                point = np.mean([getattr(new_sets[c], k) - getattr(ref_sets[c], k) for c in common])
+                lo, hi = ci(d)
+                row.update({f"{k}_diff": point, f"{k}_diff_lo": lo, f"{k}_diff_hi": hi, f"{k}_boot_p": boot_p(d)})
+            if ref_arm == "BASE" and len(delongs):
+                d = delongs[(delongs["arm"] == new_arm) & (delongs["horizon"] == horizon)
+                            & (delongs["model"] == model)]
+                d = d[[(st, se, f) in set(common) for st, se, f in zip(d["strategy"], d["seed"], d["fold"])]]
+                row["delong_p_per_split"] = ";".join(f"{p:.3g}" for p in d["delong_p"])
+                row["delong_splits_p_below_0.05"] = int((d["delong_p"] < 0.05).sum())
+            rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def gap_table(replicates, points, means, mean_reps):
+    """Internal AUROC minus external (S4) AUROC, per arm.
+
+    "mean(S1,S3)" is the main definition (v1 arms). "S1 seed 42" uses the one internal
+    split every arm has, so v1 and v2 arms can be compared on the same footing.
+    """
+    rows = []
+    for (arm, horizon, model), _ in means.groupby(["arm", "horizon", "model"]):
+        external = test_sets(points, "S4", arm, horizon, model)
+        if not external:
+            continue
+        ext_reps = np.mean([replicates[c + (horizon, model, arm)]["auroc"] for c in external], axis=0)
+        ext_pt = np.mean([r.auroc for r in external.values()])
+        definitions = {}
+        if all((s, arm, horizon, model) in mean_reps for s in ["S1", "S3"]):
+            pts = {s: means[(means["strategy"] == s) & (means["arm"] == arm) & (means["horizon"] == horizon)
+                            & (means["model"] == model)]["auroc"].iloc[0] for s in ["S1", "S3"]}
+            definitions["mean(S1,S3)"] = ((pts["S1"] + pts["S3"]) / 2,
+                                          (mean_reps[("S1", arm, horizon, model)]["auroc"]
+                                           + mean_reps[("S3", arm, horizon, model)]["auroc"]) / 2)
+        s1 = test_sets(points, "S1", arm, horizon, model).get(("S1", config.SPLIT_SEEDS[0], 0))
+        if s1 is not None:
+            definitions["S1 seed 42"] = (s1.auroc, replicates[("S1", config.SPLIT_SEEDS[0], 0, horizon, model, arm)]["auroc"])
+        for name, (int_pt, int_reps) in definitions.items():
+            lo, hi = ci(int_reps - ext_reps)
+            rows.append({"arm": arm, "horizon": horizon, "model": model, "internal": name,
+                         "internal_auroc": int_pt, "external_auroc": ext_pt, "gap": int_pt - ext_pt,
+                         "gap_lo": lo, "gap_hi": hi})
+    return pd.DataFrame(rows)
 
 
 def summary_table(means):

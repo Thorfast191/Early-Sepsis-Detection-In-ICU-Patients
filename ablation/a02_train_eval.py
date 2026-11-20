@@ -13,6 +13,7 @@ from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_s
 from ablation import a01_make_splits
 from data_preprocessing import config, utils
 from novel_preprocessing import n07_fitted_transforms as n07
+from novel_preprocessing import n09_site_screening as n09
 from novel_preprocessing.n01_labels import label_col
 
 MODELS = ["xgb", "logreg"]
@@ -20,6 +21,26 @@ STRATEGIES = ["S1", "S2", "S3", "S4"]
 # the other P2 variant, run on the external split only
 ALT_P2_ARM = "NOVEL_inductiveP2" if config.TRANSDUCTIVE_P2 else "NOVEL_transductiveP2"
 TARGET_SPECIFICITY = 0.90
+
+# v2 arms (config.RUN_V2), trained on config.V2_SPLITS only. Each is NOVEL with options;
+# BASE_noICULOS is BASE without ICULOS.
+V2_FIXED = {"v2_data": True, "tau": "exp"}
+V2_ARMS = {
+    "NOVEL_fix": V2_FIXED,
+    "NOVEL_fix_share": {**V2_FIXED, "shared_support": True},
+    "NOVEL_fix_screen": {**V2_FIXED, "screen": True},
+    "NOVEL_fix_share_screen": {**V2_FIXED, "shared_support": True, "screen": True},
+    "NOVEL_minus_P1value": {"drop_suffixes": ["_last"]},
+    "NOVEL_minus_P1hsince": {"drop_suffixes": ["_hsince"]},
+    "NOVEL_minus_P1rate": {"drop_suffixes": ["_rate"]},
+    "NOVEL_minus_P1ever": {"drop_blocks": ["ever"]},
+    "NOVEL_minus_P2": {"no_p2": True},
+    "NOVEL_minus_P3": {"drop_blocks": ["p3"]},
+    "NOVEL_minus_P4": {"drop_blocks": ["p4"]},
+    "NOVEL_minus_P5": {"drop_blocks": ["p5"]},
+    "NOVEL_minus_P6": {"no_p6": True},
+    "NOVEL_noICULOS": {"drop_base": ["ICULOS"]},
+}
 
 
 # ---- official PhysioNet 2019 utility (Reyna et al. 2020, evaluate_sepsis_score.py) ----
@@ -130,6 +151,9 @@ def load_data():
     labels = utils.load(config.LABELS_PARQUET)
     parts = {"base": config.BASE_FEATURES_PARQUET, "p1": config.P1_PARQUET, "p3": config.P3_PARQUET,
              "p4": config.P4_PARQUET, "p5": config.P5_PARQUET}
+    if config.RUN_V2:
+        parts.update({"p1_v2": config.P1_V2_PARQUET, "p3_v2": config.P3_V2_PARQUET,
+                      "p4_v2": config.P4_V2_PARQUET})
     data = {"labels": labels}
     for name, path in parts.items():
         data[name] = utils.load(path)
@@ -160,35 +184,89 @@ def base_matrix(data, roles, key):
     return X, list(data["base"].columns)
 
 
-def novel_matrix(data, roles, key, base, transductive):
-    """BASE + novel features as one float32 array; base is the output of base_matrix."""
+def drop_base_columns(base, columns):
+    X, cols = base
+    keep = [i for i, c in enumerate(cols) if c not in columns]
+    return X[:, keep], [cols[i] for i in keep]
+
+
+def screening_inputs(blocks, p1, rows, ids, hospitals, rng):
+    """Row sample of the novel model inputs and the raw P1 rate columns, for n09."""
+    pick = rows.nonzero()[0]
+    if len(pick) > 2 * config.SCREEN_SAMPLE_ROWS:
+        pick = np.sort(rng.choice(pick, 2 * config.SCREEN_SAMPLE_ROWS, replace=False))
+    X = pd.concat([b.iloc[pick] for b in blocks], axis=1)
+    rate_cols = [c for c in p1.columns if c.endswith("_hsince") or c.endswith("_ever")]
+    return {"X": X, "ids": ids[pick], "hospital": hospitals[pick], "p1": p1.loc[rows, rate_cols],
+            "p1_ids": ids[rows], "p1_hospital": hospitals[rows]}
+
+
+def novel_matrix(data, roles, key, base, transductive, opts=None, arm="NOVEL"):
+    """BASE + novel features as one float32 array; base is the output of base_matrix.
+
+    opts (v2 arms only, None = v1): v2_data, tau, no_p6, no_p2, drop_blocks, drop_suffixes,
+    drop_base, shared_support, screen.
+    """
+    opts = opts or {}
     labels = data["labels"]
     ids = labels["patient_id"].to_numpy()
     hospitals = labels["hospital"].astype(str).to_numpy()
     train = roles == "train"
-    p1 = data["p1"]
+    v2 = opts.get("v2_data", False)
+    p1 = data["p1_v2"] if v2 else data["p1"]
+    measured = config.MEASURED_V2 if v2 else config.MEASURED
 
-    decay = n07.fit_decay(p1[train], ids[train], labels["ICULOS"].to_numpy()[train], key)
-    last = n07.apply_decay(p1, decay)
-    hs_rate = p1[[c for c in n07.p2_columns() if not c.endswith("_last")]]
+    if opts.get("no_p6"):
+        last = p1[[f"{v}_last" for v in n07.value_variables(measured)]]
+    else:
+        decay = n07.fit_decay(p1[train], ids[train], labels["ICULOS"].to_numpy()[train], key,
+                              measured, opts.get("tau", "first"))
+        last = n07.apply_decay(p1, decay)
+    hs_rate = p1[[c for c in n07.p2_columns(measured) if not c.endswith("_last")]]
     p2_in = pd.concat([last, hs_rate], axis=1)
     del last
-    refs = n07.fit_p2(p2_in[train], ids[train], hospitals[train], key)
 
-    ref_hospital = hospitals
-    if key[0] == "S4":
-        source, target = a01_make_splits.S4_DIRECTIONS[key[2]]
-        test = roles == "test"
-        if transductive:
-            # unsupervised adaptation: target hospital features only, no labels
-            refs.update(n07.fit_p2_unlabeled(p2_in[test], target))
-        else:
-            # the target hospital is encoded with the training hospital's reference
-            ref_hospital = np.where(test, source, hospitals)
-    p2_out = n07.apply_p2(p2_in, ref_hospital, refs)
+    if opts.get("no_p2"):
+        p2_out = p2_in
+    else:
+        refs = n07.fit_p2(p2_in[train], ids[train], hospitals[train], key)
+        ref_hospital = hospitals
+        if key[0] == "S4":
+            source, target = a01_make_splits.S4_DIRECTIONS[key[2]]
+            test = roles == "test"
+            if transductive:
+                # unsupervised adaptation: target hospital features only, no labels
+                refs.update(n07.fit_p2_unlabeled(p2_in[test], target))
+            else:
+                # the target hospital is encoded with the training hospital's reference
+                ref_hospital = np.where(test, source, hospitals)
+        keys = n07.row_keys(ids, labels["ICULOS"].to_numpy())
+        p2_out = n07.apply_p2(p2_in, ref_hospital, refs, keys)
     del p2_in
 
-    blocks = [p2_out, p1[[f"{v}_ever" for v in config.MEASURED]], data["p3"], data["p4"], data["p5"]]
+    named = {"p2": p2_out, "ever": p1[[f"{v}_ever" for v in measured]],
+             "p3": data["p3_v2"] if v2 else data["p3"], "p4": data["p4_v2"] if v2 else data["p4"],
+             "p5": data["p5"]}
+    for name in opts.get("drop_blocks", []):
+        named.pop(name)
+    blocks = []
+    for block in named.values():
+        drop = [c for c in block.columns if any(c.endswith(sfx) for sfx in opts.get("drop_suffixes", []))]
+        blocks.append(block.drop(columns=drop) if drop else block)
+
+    if opts.get("shared_support") or opts.get("screen"):
+        rng = np.random.default_rng(config.RANDOM_STATE)
+        train_part = screening_inputs(blocks, p1, train, ids, hospitals, rng)
+        target_part = screening_inputs(blocks, p1, roles == "test", ids, hospitals, rng) \
+            if key[0] == "S4" else None
+        drop, table = n09.fit_site_screen(train_part, key, target_part, opts.get("shared_support", False),
+                                          opts.get("screen", False), measured)
+        save_screen_table(table, arm, key)
+        print(f"{arm} {key}: site screening drops {len(drop)} columns")
+        blocks = [b.drop(columns=[c for c in b.columns if c in set(drop)]) for b in blocks]
+
+    if opts.get("drop_base"):
+        base = drop_base_columns(base, opts["drop_base"])
     base_X, base_cols = base
     columns = base_cols + [c for b in blocks for c in b.columns]
     # one array for everything, filled block by block, so no extra full-size copies
@@ -198,9 +276,19 @@ def novel_matrix(data, roles, key, base, transductive):
     for block in blocks:
         X[:, start:start + block.shape[1]] = block.to_numpy(dtype="float32")
         start += block.shape[1]
-    del blocks, p2_out
+    del blocks, p2_out, named
     fill_and_scale(X[:, len(base_cols):], train, ids, key)
     return X, columns
+
+
+def save_screen_table(table, arm, key):
+    strategy, seed, fold = key
+    table = table.assign(arm=arm, strategy=strategy, seed=seed, fold=fold)
+    old = pd.read_csv(config.SCREEN_CSV) if utils.is_done(config.SCREEN_CSV) else pd.DataFrame()
+    if len(old):
+        old = old[~((old["arm"] == arm) & (old["strategy"] == strategy) & (old["seed"] == seed)
+                    & (old["fold"] == fold))]
+    pd.concat([old, table], ignore_index=True).to_csv(config.SCREEN_CSV, index=False)
 
 
 # ---- models ----
@@ -260,7 +348,10 @@ def job_done(name):
 
 
 def arms_for(key):
-    return ["BASE", "NOVEL", ALT_P2_ARM] if key[0] == "S4" else ["BASE", "NOVEL"]
+    arms = ["BASE", "NOVEL", ALT_P2_ARM] if key[0] == "S4" else ["BASE", "NOVEL"]
+    if config.RUN_V2 and tuple(key) in [tuple(k) for k in config.V2_SPLITS]:
+        arms += ["BASE_noICULOS"] + list(V2_ARMS)
+    return arms
 
 
 def save_job(name, arm, key, horizon, model, metrics, test, extra):
@@ -352,6 +443,16 @@ def run(force=False, strategies=STRATEGIES):
         if ALT_P2_ARM in arms:
             novel = novel_matrix(data, roles, key, base, not config.TRANSDUCTIVE_P2)
             run_arm(ALT_P2_ARM, novel, data, roles, key)
+            del novel
+        if "BASE_noICULOS" in arms:
+            run_arm("BASE_noICULOS", drop_base_columns(base, ["ICULOS"]), data, roles, key)
+        for arm, opts in V2_ARMS.items():
+            if arm not in arms:
+                continue
+            if all(job_done(job_name(arm, key, h, m)) for h in config.HORIZONS for m in MODELS):
+                continue
+            novel = novel_matrix(data, roles, key, base, config.TRANSDUCTIVE_P2, opts, arm)
+            run_arm(arm, novel, data, roles, key)
             del novel
         collect_results()
     results = collect_results()

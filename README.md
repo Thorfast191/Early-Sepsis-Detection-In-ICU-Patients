@@ -52,6 +52,11 @@ Set `QUICK_MODE = True` in the notebooks (or `SEPSIS_QUICK_MODE=1` locally) to r
 sample of 4,000 patients with separate checkpoint folders. The checks in `tests/` (causality, leakage,
 identical evaluation sets) run with `python -m tests.test_causality` and so on.
 
+v2 (off by default, `RUN_V2 = True` in the notebooks or `SEPSIS_RUN_V2=1`): Calcium and SaO2 data
+fixes and an exponential tau fit (notebook 02 step 8), a shared-support rule and label-free
+site-invariance screening, leave-one-group-out arms and arms without ICULOS. v2 arms run on S1 seed 42
+and both S4 directions.
+
 ## Run it locally
 
 ```

@@ -16,15 +16,17 @@ FIT_LOG = []
 _SPLITS = None
 
 
-def value_variables():
-    return [v for v in config.MEASURED if v not in n03_observation_process.NO_VALUE]
+def value_variables(measured=None):
+    measured = config.MEASURED if measured is None else measured
+    return [v for v in measured if v not in n03_observation_process.NO_VALUE]
 
 
-def p2_columns():
+def p2_columns(measured=None):
     """Columns turned into within-hospital percentiles: P1 last values, hours since, rates."""
-    cols = [f"{v}_last" for v in value_variables()]
-    cols += [f"{v}_hsince" for v in config.MEASURED]
-    cols += [f"{v}_rate" for v in config.MEASURED]
+    measured = config.MEASURED if measured is None else measured
+    cols = [f"{v}_last" for v in value_variables(measured)]
+    cols += [f"{v}_hsince" for v in measured]
+    cols += [f"{v}_rate" for v in measured]
     return cols
 
 
@@ -89,8 +91,8 @@ def apply_scaler(X, scaler):
 
 # ---- P6: time-decay imputation of the P1 last values ----
 
-def autocorrelation_tau(values, patient_codes, hours, rng):
-    """First lag (hours) at which the within-patient autocorrelation drops below 1/e."""
+def autocorrelation_curve(values, patient_codes, hours, rng):
+    """Pooled within-patient autocorrelation and number of pairs for lags 1..TAU_MAX."""
     codes = np.unique(patient_codes)
     if len(codes) > TAU_MAX_PATIENTS:
         codes = rng.choice(codes, TAU_MAX_PATIENTS, replace=False)
@@ -98,6 +100,7 @@ def autocorrelation_tau(values, patient_codes, hours, rng):
     rows = np.searchsorted(np.sort(codes), patient_codes[keep])
     grid = np.full((len(codes), int(hours.max()) + 1), np.nan)
     grid[rows, hours[keep].astype(int)] = values[keep]
+    lags, corr, pairs = [], [], []
     for lag in range(1, TAU_MAX + 1):
         if lag >= grid.shape[1]:
             break
@@ -108,23 +111,56 @@ def autocorrelation_tau(values, patient_codes, hours, rng):
         x, y = a[both], b[both]
         if x.std() == 0 or y.std() == 0:
             continue
-        if np.corrcoef(x, y)[0, 1] < 1 / np.e:
-            return lag
-    return TAU_MAX
+        lags.append(lag)
+        corr.append(np.corrcoef(x, y)[0, 1])
+        pairs.append(both.sum())
+    return np.array(lags), np.array(corr), np.array(pairs)
 
 
-def fit_decay(p1, patient_ids, hours, key):
+def tau_first_crossing(lags, corr):
+    """v1: first lag at which the autocorrelation drops below 1/e."""
+    below = np.nonzero(corr < 1 / np.e)[0]
+    return lags[below[0]] if len(below) else TAU_MAX
+
+
+def tau_exponential_fit(lags, corr, pairs):
+    """v2: tau of exp(-lag / tau) fitted to the whole curve.
+
+    Weighted least squares of log(corr) on lag through the origin, weights = number
+    of pairs; lags with corr <= 0 are left out. One early dip no longer decides tau.
+    """
+    keep = corr > 0
+    if keep.sum() < 2:
+        return TAU_MIN
+    k, r, w = lags[keep], corr[keep], pairs[keep]
+    slope = (w * k * np.log(r)).sum() / (w * k * k).sum()
+    return TAU_MAX if slope >= 0 else -1 / slope
+
+
+def autocorrelation_tau(values, patient_codes, hours, rng, method="first"):
+    if len(values) == 0:
+        # never measured in the training patients (e.g. iCalcium when training on A)
+        return TAU_MAX
+    lags, corr, pairs = autocorrelation_curve(values, patient_codes, hours, rng)
+    if len(lags) == 0:
+        return TAU_MAX
+    if method == "exp":
+        return tau_exponential_fit(lags, corr, pairs)
+    return tau_first_crossing(lags, corr)
+
+
+def fit_decay(p1, patient_ids, hours, key, measured=None, tau_method="first"):
     """tau_v and the training median of the observed values, per variable."""
     assert_train_only(patient_ids, key, "decay")
     rng = np.random.default_rng(config.RANDOM_STATE)
     codes = pd.factorize(np.asarray(patient_ids))[0]
     hours = np.asarray(hours)
     tau, median = {}, {}
-    for v in value_variables():
+    for v in value_variables(measured):
         observed = (p1[f"{v}_hsince"].to_numpy() == 0) & (p1[f"{v}_ever"].to_numpy() == 1)
         values = p1[f"{v}_last"].to_numpy(dtype="float64")
         median[v] = float(np.median(values[observed])) if observed.any() else 0.0
-        tau[v] = autocorrelation_tau(values[observed], codes[observed], hours[observed], rng)
+        tau[v] = autocorrelation_tau(values[observed], codes[observed], hours[observed], rng, tau_method)
     tau = pd.Series(tau).clip(TAU_MIN, TAU_MAX)
     return {"tau": tau, "median": pd.Series(median)}
 
@@ -132,7 +168,7 @@ def fit_decay(p1, patient_ids, hours, key):
 def apply_decay(p1, decay):
     """last value pulled towards the training median as it gets older; median if never seen."""
     out = {}
-    for v in value_variables():
+    for v in decay["tau"].index:
         last = p1[f"{v}_last"].to_numpy(dtype="float64")
         weight = np.exp(-p1[f"{v}_hsince"].to_numpy(dtype="float64") / decay["tau"][v])
         value = weight * last + (1 - weight) * decay["median"][v]
@@ -172,9 +208,39 @@ def fit_p2_unlabeled(X, hospital):
     return {hospital: _reference(X, rng)}
 
 
-def apply_p2(X, hospitals, refs):
-    """Mid-rank percentile in [0, 1] of every value within its row's hospital reference."""
+def row_uniform(row_keys, column):
+    """Deterministic uniform [0, 1) number per (row, column), from a hash of the row key.
+
+    The draw depends only on the row itself, never on other rows, so it stays causal
+    and gives the same value in every split.
+    """
+    with np.errstate(over="ignore"):
+        x = np.asarray(row_keys, dtype=np.uint64) * np.uint64(0x9E3779B97F4A7C15) + np.uint64(column + 1)
+        # splitmix64 finaliser
+        x ^= x >> np.uint64(30)
+        x *= np.uint64(0xBF58476D1CE4E5B9)
+        x ^= x >> np.uint64(27)
+        x *= np.uint64(0x94D049BB133111EB)
+        x ^= x >> np.uint64(31)
+    return (x >> np.uint64(11)).astype("float64") / float(1 << 53)
+
+
+def row_keys(patient_ids, hours):
+    """Numeric key per row: patient number and ICULOS (p000123 at hour 7 -> 123007)."""
+    numbers = pd.Series(np.asarray(patient_ids)).str.slice(1).astype("int64").to_numpy()
+    return numbers * 1000 + np.asarray(hours, dtype="int64")
+
+
+def apply_p2(X, hospitals, refs, keys):
+    """Percentile in [0, 1] of every value within its row's hospital reference.
+
+    A value tied with reference values gets a random position inside the tie, drawn
+    from row_uniform. With mid-ranks every tied value (hours since = 0, an integer
+    heart rate) became one number per hospital, so the encoded value told the model
+    which hospital the row came from.
+    """
     hospitals = np.asarray(hospitals)
+    keys = np.asarray(keys)
     out = np.full(X.shape, np.nan, dtype="float32")
     for h in np.unique(hospitals):
         rows = hospitals == h
@@ -183,7 +249,9 @@ def apply_p2(X, hospitals, refs):
             values = X[col].to_numpy(dtype="float64")[rows]
             if len(ref) == 0:
                 continue
-            pct = (np.searchsorted(ref, values, "left") + np.searchsorted(ref, values, "right")) / (2 * len(ref))
+            low = np.searchsorted(ref, values, "left")
+            high = np.searchsorted(ref, values, "right")
+            pct = (low + row_uniform(keys[rows], j) * (high - low)) / len(ref)
             out[rows, j] = np.where(np.isnan(values), np.nan, pct)
     return pd.DataFrame(out, index=X.index, columns=X.columns)
 

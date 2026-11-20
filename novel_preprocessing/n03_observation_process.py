@@ -10,9 +10,9 @@ from novel_preprocessing import common
 NO_VALUE = ["EtCO2"]
 
 
-def features(grid):
+def features(grid, variables=None):
     """P1 observation process per variable: last value, hours since, ever observed, rate."""
-    variables = config.MEASURED
+    variables = config.MEASURED if variables is None else variables
     values = grid[variables]
     observed = values.notna()
     group = grid["patient_id"].to_numpy()

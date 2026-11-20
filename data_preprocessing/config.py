@@ -103,3 +103,26 @@ XGB_EARLY_STOP = 100
 XGB_FIXED_ROUNDS = 500
 N_BOOTSTRAP = 1000
 P2_REFERENCE_ROWS = 200_000
+
+# ---- v2: data fixes, site-invariance screening, feature-group ablation ----
+# off by default, so the v1 run is unchanged; set SEPSIS_RUN_V2=1 (or config.RUN_V2 = True
+# before calling a02) to train the v2 arms as well
+RUN_V2 = os.environ.get("SEPSIS_RUN_V2", "0") == "1"
+# v2 arms are trained on these splits only (S1 seed 42 for internal, both S4 directions)
+V2_SPLITS = [("S1", 42, 0), ("S4", 42, 0), ("S4", 42, 1)]
+# values below the cut-off become a separate variable: ionized calcium (mmol/L, hospital B)
+# and suspected venous saturation (hospital A)
+VARIABLE_SPLITS = {"Calcium": ("iCalcium", 2.0), "SaO2": ("SvO2_suspect", 80.0)}
+MEASURED_V2 = MEASURED + [new for new, _ in VARIABLE_SPLITS.values()]
+LABS_V2 = LABS + [new for new, _ in VARIABLE_SPLITS.values()]
+# shared support: observation-process features only if the A/B measurement-rate ratio is inside
+SHARED_SUPPORT_RATIO = (0.2, 5.0)
+# site-invariance screening: drop a feature unit whose hospital-classifier AUROC is above this
+SCREEN_MAX_DOMAIN_AUROC = 0.70
+SCREEN_SAMPLE_ROWS = 60_000
+
+P1_V2_PARQUET = os.path.join(NOVEL_DIR, "novel_p1_observation_v2.parquet")
+P3_V2_PARQUET = os.path.join(NOVEL_DIR, "novel_p3_baseline_v2.parquet")
+P4_V2_PARQUET = os.path.join(NOVEL_DIR, "novel_p4_scores_v2.parquet")
+SCREEN_CSV = os.path.join(RESULTS_DIR, "v2_screening_domain_auroc.csv")
+TAU_V2_CSV = os.path.join(RESULTS_DIR, "v2_tau_values.csv")

@@ -3,7 +3,7 @@ import pandas as pd
 
 from data_preprocessing import config, utils
 from novel_preprocessing import (common, n02_base_features, n03_observation_process, n04_patient_baseline,
-                                 n05_clinical_scores, n06_trajectory)
+                                 n05_clinical_scores, n06_trajectory, n08_data_fixes)
 
 N_PATIENTS = 50
 
@@ -15,7 +15,7 @@ def all_features(grid):
         n04_patient_baseline.features(grid),
         n05_clinical_scores.features(grid),
         n06_trajectory.features(grid),
-    ], axis=1)
+    ] + [f.add_suffix("__v2") for f in n08_data_fixes.features(grid)], axis=1)
 
 
 def run():
